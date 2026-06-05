@@ -1,5 +1,5 @@
 export type Example = {
-  profile: "ecmwf" | "aef" | "firesmoke" | "ftw";
+  profile: "aef" | "firesmoke" | "ftw";
   title: string;
   url: string;
   /** Default URL params applied when the example is picked. Any param
@@ -10,15 +10,6 @@ export type Example = {
 };
 
 export const EXAMPLES: Example[] = [
-  {
-    profile: "ecmwf",
-    title: "ECMWF IFS ENS — 2 m Temperature (forecast cube)",
-    url: "https://data.source.coop/dynamical/ecmwf-ifs-ens-forecast-15-day-0-25-degree/v0.1.0.zarr",
-    // Europe-centered at zoom 4.5 — matches the upstream
-    // `dynamical-zarr-ecmwf` example's default view, ECMWF's primary
-    // forecast domain.
-    params: { lng: "10", lat: "45", zoom: "4.5" },
-  },
   {
     profile: "aef",
     title: "AlphaEarth Foundations Mosaic (10 m, 64-band embeddings)",

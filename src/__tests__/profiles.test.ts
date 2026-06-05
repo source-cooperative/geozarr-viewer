@@ -1,23 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { aefProfile } from "../zarr/profiles/aef/profile";
-import { ecmwfProfile } from "../zarr/profiles/ecmwf/profile";
 
 describe("profile URL params round-trip", () => {
-  it("ECMWF serializes + parses", () => {
-    const state = {
-      variable: "temperature_2m",
-      initTime: 788,
-      leadTime: 5,
-      member: 0,
-    };
-    const params = new URLSearchParams(
-      Object.entries(ecmwfProfile.serializeUrlParams(state)).filter(
-        (kv): kv is [string, string] => typeof kv[1] === "string",
-      ),
-    );
-    expect(ecmwfProfile.parseUrlParams(params)).toEqual(state);
-  });
-
   it("AEF serializes + parses", () => {
     const state = {
       year: 8,

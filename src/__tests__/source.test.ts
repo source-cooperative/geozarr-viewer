@@ -2,14 +2,6 @@ import { describe, expect, it } from "vitest";
 import { detectProfile, normalizeStoreUrl } from "../source";
 
 describe("detectProfile", () => {
-  it("matches ECMWF by URL pattern", () => {
-    const p = detectProfile(
-      "https://data.source.coop/dynamical/ecmwf-ifs-ens-forecast-15-day-0-25-degree/v0.1.0.zarr",
-      null,
-    );
-    expect(p?.id).toBe("ecmwf");
-  });
-
   it("matches AEF by URL pattern", () => {
     const p = detectProfile("https://data.source.coop/tge-labs/aef-mosaic", null);
     expect(p?.id).toBe("aef");
@@ -63,9 +55,8 @@ describe("normalizeStoreUrl", () => {
     ).toBe("https://data.source.coop/tge-labs/aef-mosaic");
   });
 
-  it("leaves the ECMWF URL unchanged", () => {
-    const url =
-      "https://data.source.coop/dynamical/ecmwf-ifs-ens-forecast-15-day-0-25-degree/v0.1.0.zarr";
+  it("leaves an already-normalized data.source.coop URL unchanged", () => {
+    const url = "https://data.source.coop/some-account/some-dataset/v1.zarr";
     expect(normalizeStoreUrl(url)).toBe(url);
   });
 
