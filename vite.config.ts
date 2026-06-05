@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ command }) => ({
-  base: command === "build" ? "/zarr-viewer/" : "/",
+  base: command === "build" ? "/geozarr-viewer/" : "/",
   plugins: [react()],
   worker: { format: "es" },
   test: {

@@ -1,5 +1,5 @@
 {
-  "name": "zarr-viewer",
+  "name": "geozarr-viewer",
   "private": true,
   "version": "0.0.0",
   "type": "module",

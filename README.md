@@ -1,4 +1,6 @@
-# zarr-viewer
+# geozarr-viewer
+
+Live: <https://tylere.github.io/geozarr-viewer/>
 
 Browser-only viewer for GeoZarr / Zarr raster datasets, built on MapLibre +
 deck.gl + [`@developmentseed/deck.gl-zarr`](https://www.npmjs.com/package/@developmentseed/deck.gl-zarr).
