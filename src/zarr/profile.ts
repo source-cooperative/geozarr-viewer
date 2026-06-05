@@ -1,0 +1,99 @@
+import type { Layer } from "@deck.gl/core";
+import type { Device, Texture } from "@luma.gl/core";
+import type { ReactNode } from "react";
+import type * as zarr from "zarrita";
+import type { AutoStats } from "../render/stats";
+import type { ViewerState } from "../state/types";
+import type { StructureProfileSummary } from "./structure";
+
+/** Base context shape every profile's `prepare()` returns. Profiles extend
+ * it with their own dataset-specific fields (variable list, dim sizes,
+ * band labels, etc.). */
+export type ProfileBaseContext = {
+  url: string;
+  group: zarr.Group<zarr.Readable>;
+};
+
+export type ProfileControlsProps<Ctx, S> = {
+  ctx: Ctx;
+  state: S;
+  update: (patch: Partial<S>) => void;
+  chassisState: ViewerState;
+  chassisUpdate: (patch: Partial<ViewerState>) => void;
+  autoStats: AutoStats | null;
+  onFlyTo: (longitude: number, latitude: number, zoom: number) => void;
+};
+
+export type BuildLayerArgs<Ctx, S> = {
+  ctx: Ctx;
+  state: S;
+  chassisState: ViewerState;
+  device: Device | null;
+  colormapTexture: Texture | null;
+  autoStats: AutoStats | null;
+  basemapBeforeId: string | undefined;
+  /** The resolved `node` to hand to `ZarrLayer` — either a group or an
+   * already-opened array (from {@link ZarrProfile.resolveNode}). Null
+   * while the array is opening. */
+  node:
+    | zarr.Array<zarr.DataType, zarr.Readable>
+    | zarr.Group<zarr.Readable>
+    | null;
+};
+
+export type ZarrProfile<
+  S extends object = object,
+  Ctx extends ProfileBaseContext = ProfileBaseContext,
+> = {
+  id: string;
+  label: string;
+  matches: (url: string) => boolean;
+  prepare: (url: string, signal: AbortSignal) => Promise<Ctx>;
+  initialState: (ctx: Ctx) => S;
+  parseUrlParams: (p: URLSearchParams) => Partial<S>;
+  serializeUrlParams: (s: S) => Record<string, string | null>;
+  /** Initial bounds [west,south,east,north] for fitBounds after load. */
+  initialBounds?: (ctx: Ctx) => [number, number, number, number] | null;
+  /** Initial view (overrides initialBounds) for datasets that prefer flyTo. */
+  initialView?: (ctx: Ctx, state: S) =>
+    | { longitude: number; latitude: number; zoom: number }
+    | null;
+  /** Lowest map zoom at which this profile's layer renders tiles (matches
+   * the layer's `minZoom`). When set, the chassis shows a "zoom in" hint
+   * below it. Omit for profiles that render at every zoom. */
+  minRenderZoom?: number;
+  Controls: (props: ProfileControlsProps<Ctx, S>) => ReactNode;
+  /** Open the variable array(s) needed by the current state. The result is
+   * threaded into {@link BuildLayerArgs.node}. Profiles that render a
+   * whole group can omit this; App.tsx will pass `ctx.group` as `node`. */
+  resolveNode?: (
+    ctx: Ctx,
+    state: S,
+    signal: AbortSignal,
+  ) => Promise<
+    zarr.Array<zarr.DataType, zarr.Readable> | zarr.Group<zarr.Readable>
+  >;
+  /** Keys in profile state that should re-trigger `resolveNode`. */
+  resolveNodeDeps?: (state: S) => unknown[];
+  /** Keys in profile state that should re-trigger `computeAutoStats`. If
+   * omitted, the App falls back to the resolveNode deps. */
+  statsDeps?: (state: S) => unknown[];
+  buildLayer: (args: BuildLayerArgs<Ctx, S>) => Layer | null;
+  /** Whether this profile uses single-band + colormap rendering (and so
+   * needs the colormap sprite uploaded before layer construction). */
+  needsColormap: boolean;
+  /** Describe the store/variable shape currently being rendered. Used
+   * by the Structure panel; pure function of `ctx` + `state`. */
+  getStructure: (ctx: Ctx, state: S) => StructureProfileSummary;
+  computeAutoStats?: (args: {
+    ctx: Ctx;
+    state: S;
+    signal: AbortSignal;
+  }) => Promise<AutoStats | null>;
+};
+
+/** Erased registry type — profiles are stored without their state generic
+ * so we can list them uniformly. Each entry's state shape is opaque to
+ * callers that go through the registry. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyZarrProfile = ZarrProfile<any, any>;

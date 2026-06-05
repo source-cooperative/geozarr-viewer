@@ -1,0 +1,332 @@
+import { COLORMAP_INDEX } from "@developmentseed/deck.gl-raster/gpu-modules";
+import colormapsPngUrl from "@developmentseed/deck.gl-raster/gpu-modules/colormaps.png";
+import type { ReactNode } from "react";
+import { findMatchingLocation, LOCATIONS } from "../locations";
+import type { AutoStats } from "../render/stats";
+import { percentileFromHistogram } from "../render/stats";
+import type {
+  Basemap,
+  Stretch,
+  ViewerState,
+  ViewerStateUpdate,
+} from "../state/types";
+import { ColormapPicker, type ColormapOption } from "./ColormapPicker";
+
+const BASEMAP_OPTIONS: { value: Basemap; label: string }[] = [
+  { value: "auto", label: "Auto (system)" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "satellite", label: "Satellite" },
+  { value: "off", label: "None" },
+];
+
+const STRETCH_OPTIONS: { value: Stretch; label: string }[] = [
+  { value: "linear", label: "Linear" },
+  { value: "log", label: "Log" },
+  { value: "sqrt", label: "Sqrt" },
+];
+
+const COLORMAP_NAMES = Object.keys(COLORMAP_INDEX).sort();
+const COLORMAP_ROW_COUNT = Object.keys(COLORMAP_INDEX).length;
+const COLORMAP_OPTIONS: ColormapOption[] = COLORMAP_NAMES.map((name) => ({
+  name,
+  label: name,
+  rowIndex: (COLORMAP_INDEX as Record<string, number>)[name] ?? 0,
+}));
+
+type Props = {
+  state: ViewerState;
+  update: (patch: ViewerStateUpdate) => void;
+  /** Profile-supplied controls block (variable picker, dim sliders, etc.). */
+  profileSlot: ReactNode;
+  /** Profile name shown in the panel title. */
+  profileLabel: string | null;
+  /** Whether to show single-band colormap + rescale controls. */
+  showSingleBandControls: boolean;
+  autoStats: AutoStats | null;
+  /** Animated map move. Wired to the location dropdown so picking a
+   * preset both moves the map and updates the URL. */
+  onFlyTo: (longitude: number, latitude: number, zoom: number) => void;
+};
+
+export function ControlsPanel({
+  state,
+  update,
+  profileSlot,
+  profileLabel,
+  showSingleBandControls,
+  autoStats,
+  onFlyTo,
+}: Props) {
+  const isOpen = state.panel === "open";
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 16,
+        right: 16,
+        width: 320,
+        maxHeight: "calc(100vh - 32px)",
+        overflow: "auto",
+        zIndex: 5,
+      }}
+    >
+      <details
+        className="panel"
+        open={isOpen}
+        onToggle={(e) =>
+          update({
+            panel: (e.target as HTMLDetailsElement).open ? "open" : "closed",
+          })
+        }
+        style={{ padding: 12 }}
+      >
+        <summary style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="panel-header">Options</span>
+          {profileLabel && (
+            <span
+              className="mono"
+              style={{
+                color: "var(--text-muted)",
+                fontSize: 11,
+                textTransform: "none",
+              }}
+            >
+              {profileLabel}
+            </span>
+          )}
+        </summary>
+
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+          {profileSlot && <div className="section">{profileSlot}</div>}
+
+          <div className="section">
+            <span className="section-title">Location</span>
+            <div style={{ display: "grid", gap: 4, marginTop: 6 }}>
+              <LocationPicker state={state} update={update} onFlyTo={onFlyTo} />
+            </div>
+          </div>
+
+          {showSingleBandControls && (
+            <div className="section">
+              <span className="section-title">Render</span>
+              <div style={{ display: "grid", gap: 10, marginTop: 6 }}>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span className="field-label">Colormap</span>
+                  <ColormapPicker
+                    colormapsPngUrl={colormapsPngUrl}
+                    rowCount={COLORMAP_ROW_COUNT}
+                    value={state.colormap ?? "viridis"}
+                    options={COLORMAP_OPTIONS}
+                    onChange={(name) => update({ colormap: name })}
+                  />
+                </label>
+                <RescaleEditor
+                  state={state}
+                  update={update}
+                  autoStats={autoStats}
+                />
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span className="field-label">Stretch</span>
+                  <select
+                    value={state.stretch}
+                    onChange={(e) =>
+                      update({ stretch: e.target.value as Stretch })
+                    }
+                  >
+                    {STRETCH_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span
+                    className="field-label"
+                    style={{ display: "flex", justifyContent: "space-between" }}
+                  >
+                    <span>Gamma</span>
+                    <span className="mono" style={{ textTransform: "none" }}>
+                      {state.gamma.toFixed(2)}
+                    </span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={3}
+                    step={0.05}
+                    value={state.gamma}
+                    onChange={(e) => update({ gamma: Number(e.target.value) })}
+                  />
+                </label>
+              </div>
+            </div>
+          )}
+
+          <div className="section">
+            <span className="section-title">Chassis</span>
+            <div style={{ display: "grid", gap: 10, marginTop: 6 }}>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span
+                  className="field-label"
+                  style={{ display: "flex", justifyContent: "space-between" }}
+                >
+                  <span>Opacity</span>
+                  <span className="mono" style={{ textTransform: "none" }}>
+                    {Math.round(state.opacity * 100)}%
+                  </span>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={state.opacity}
+                  onChange={(e) => update({ opacity: Number(e.target.value) })}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span className="field-label">Basemap</span>
+                <select
+                  value={state.basemap}
+                  onChange={(e) =>
+                    update({ basemap: e.target.value as Basemap })
+                  }
+                >
+                  {BASEMAP_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function LocationPicker({
+  state,
+  update,
+  onFlyTo,
+}: {
+  state: ViewerState;
+  update: (patch: ViewerStateUpdate) => void;
+  onFlyTo: (longitude: number, latitude: number, zoom: number) => void;
+}) {
+  // The dropdown's selected value derives from state.view (the URL). When
+  // the user pans/zooms manually, the match flips to "" ("Custom view").
+  const match = findMatchingLocation(state.view);
+  const value = match?.id ?? "";
+  const handleChange = (id: string) => {
+    const loc = LOCATIONS.find((l) => l.id === id);
+    if (!loc) return;
+    // Trigger the animated map move first, then write the new view to
+    // the URL. The flyTo's `moveend` fires without `originalEvent`, so
+    // App.onMoveEnd won't double-write.
+    onFlyTo(loc.longitude, loc.latitude, loc.zoom);
+    update({ view: [loc.longitude, loc.latitude, loc.zoom] });
+  };
+  return (
+    <select
+      aria-label="location"
+      value={value}
+      onChange={(e) => handleChange(e.target.value)}
+    >
+      <option value="" disabled>
+        {value === "" ? "Custom view" : "Choose a preset…"}
+      </option>
+      {LOCATIONS.map((l) => (
+        <option key={l.id} value={l.id}>
+          {l.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function RescaleEditor({
+  state,
+  update,
+  autoStats,
+}: {
+  state: ViewerState;
+  update: (patch: ViewerStateUpdate) => void;
+  autoStats: AutoStats | null;
+}) {
+  // Use existing rescale or fall back to a 2-98% percentile of autoStats
+  // for the displayed default.
+  const auto = autoStats?.global ?? null;
+  const fallback: [number, number] | null = auto
+    ? [
+        percentileFromHistogram(auto, 0.02),
+        percentileFromHistogram(auto, 0.98),
+      ]
+    : null;
+  const value = state.rescale ?? fallback;
+  return (
+    <div style={{ display: "grid", gap: 4 }}>
+      <span
+        className="field-label"
+        style={{ display: "flex", justifyContent: "space-between" }}
+      >
+        <span>Rescale (min → max)</span>
+        {state.rescale ? (
+          <button
+            type="button"
+            style={{
+              fontSize: 10,
+              padding: "2px 6px",
+              background: "transparent",
+              border: "none",
+              color: "var(--text-muted)",
+              textTransform: "none",
+            }}
+            onClick={() => update({ rescale: null })}
+          >
+            reset
+          </button>
+        ) : (
+          <span
+            className="mono"
+            style={{ color: "var(--text-muted)", textTransform: "none" }}
+          >
+            auto
+          </span>
+        )}
+      </span>
+      <div style={{ display: "grid", gap: 4, gridTemplateColumns: "1fr 1fr" }}>
+        <input
+          type="number"
+          aria-label="rescale-min"
+          step="any"
+          value={value ? value[0] : ""}
+          placeholder="min"
+          onChange={(e) => {
+            const lo = Number(e.target.value);
+            const hi = value ? value[1] : Number(e.target.value) + 1;
+            if (Number.isFinite(lo))
+              update({ rescale: [lo, Number.isFinite(hi) ? hi : lo + 1] });
+          }}
+        />
+        <input
+          type="number"
+          aria-label="rescale-max"
+          step="any"
+          value={value ? value[1] : ""}
+          placeholder="max"
+          onChange={(e) => {
+            const hi = Number(e.target.value);
+            const lo = value ? value[0] : Number(e.target.value) - 1;
+            if (Number.isFinite(hi))
+              update({ rescale: [Number.isFinite(lo) ? lo : hi - 1, hi] });
+          }}
+        />
+      </div>
+    </div>
+  );
+}
