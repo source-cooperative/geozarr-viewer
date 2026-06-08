@@ -308,6 +308,12 @@ const REF_AXIS_PX = 256;
 const BUDGET_BYTES = 8_000_000;
 const BUDGET_CHUNKS = 16;
 const MAX_RENDER_ZOOM = 24;
+/** A single-chunk-plane store (the spatial chunk spans the whole lat/lon
+ * shape) is exactly one tile; zooming in never loads anything new. Render it at
+ * world view when that one fetch is at most this many bytes. ~256 MB admits
+ * EEPS-class global float16 grids (18000×6501×2 ≈ 234 MB) while still deferring
+ * ~½ GB+ planes via the zoom gate. */
+const SINGLE_TILE_BYTE_BUDGET = 256 * 1e6;
 
 /** Lowest web-mercator zoom to render at, modelling the data a zoom-out pulls.
  * The deck.gl-zarr layer reads single-resolution stores at full resolution,
@@ -320,23 +326,42 @@ const MAX_RENDER_ZOOM = 24;
  * (`⌈d/chunkW⌉·⌈d/chunkH⌉` — the chunk-driven overfetch). The gate is the
  * lowest zoom satisfying both budgets.
  *
- * Bytes are deliberately the *pure viewport* (not rounded up to whole chunks):
- * a store with one giant chunk pulls that whole chunk at any zoom, so zooming
- * can't reduce it — gating such a store harder would only hide data at equal
- * cost. It therefore renders at its resolution floor (the byte/request terms
- * collapse to resolution-only when one chunk covers the viewport). Chunk size
- * bites where zoom can fix it: tiny chunks blow the request budget and gate up.
+ * **Single-chunk-plane special case** (when `shapeW`/`shapeH` are passed and the
+ * spatial chunk spans the whole plane): the store is one tile, so zooming in
+ * can't reduce the fetch. If that one fetch fits {@link SINGLE_TILE_BYTE_BUDGET}
+ * we render it at world view (z0) — the per-zoom byte gate is meaningless here
+ * and would only hide globally-available data behind a misleading "zoom in"
+ * hint. An over-budget single plane falls through to the loop below, which
+ * settles on its resolution floor and defers the large fetch until the user
+ * zooms in.
+ *
+ * Bytes are otherwise the *pure viewport* (not rounded up to whole chunks):
+ * tiny chunks blow the request budget and gate up, where zoom can actually fix
+ * the overfetch.
  *
  * Examples: FTW ~10 m/256-chunk/f32 → ~z12; 0.25° → ~z1; the same 10 m grid
  * with 64-px chunks → ~z14 (request-bound); int8 gates ~1 level looser than
- * float32 when bytes bind. */
+ * float32 when bytes bind; EEPS 0.02°/whole-plane float16 → z0. */
 export function deriveMinZoom(
   metersPerPx: number,
   chunkW: number,
   chunkH: number,
   bytesPerEl: number,
+  /** Full spatial shape, when known. Enables the single-chunk-plane
+   * short-circuit; omit to keep the pure per-zoom budget gate. */
+  shapeW?: number,
+  shapeH?: number,
 ): number {
   if (!(metersPerPx > 0)) return 0;
+  if (
+    shapeW != null &&
+    shapeH != null &&
+    chunkW >= shapeW &&
+    chunkH >= shapeH &&
+    chunkW * chunkH * bytesPerEl <= SINGLE_TILE_BYTE_BUDGET
+  ) {
+    return 0; // one global tile; zooming loads nothing new
+  }
   const cw = chunkW > 0 ? chunkW : REF_AXIS_PX;
   const ch = chunkH > 0 ? chunkH : REF_AXIS_PX;
   const nativeZoom = Math.log2(EARTH_CIRCUMFERENCE_M / (metersPerPx * 256));
@@ -411,11 +436,15 @@ export const scalarGridProfile: ZarrProfile<ScalarGridState, ScalarGridContext> 
     const nd = firstArr.chunks.length;
     const chunkH = firstArr.chunks[nd - 2] ?? REF_AXIS_PX;
     const chunkW = firstArr.chunks[nd - 1] ?? REF_AXIS_PX;
+    const shapeH = firstArr.shape[nd - 2] ?? 0;
+    const shapeW = firstArr.shape[nd - 1] ?? 0;
     const minRenderZoom = deriveMinZoom(
       metersPerPx,
       chunkW,
       chunkH,
       bytesPerElement(firstArr.dtype),
+      shapeW,
+      shapeH,
     );
 
     // CF labels for every non-spatial dim (dates / durations / index).
