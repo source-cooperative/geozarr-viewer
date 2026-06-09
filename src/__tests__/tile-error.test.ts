@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _resetInstalledForTesting,
+  _resetTileHealthForTesting,
   installConsoleAbortFilter,
   isAbortError,
+  reportTileError,
+  reportTileResult,
+  subscribeTileHealth,
 } from "../zarr/tile-error";
 
 // The install flag is module-scoped so production code can't double-wrap.
@@ -101,5 +105,46 @@ describe("installConsoleAbortFilter", () => {
     } finally {
       console.warn = original;
     }
+  });
+});
+
+describe("tile health", () => {
+  beforeEach(() => _resetTileHealthForTesting());
+
+  it("flips to degraded after consecutive non-abort failures (threshold 4)", () => {
+    const seen: boolean[] = [];
+    subscribeTileHealth((d) => seen.push(d));
+    for (let i = 0; i < 3; i++) reportTileError(new Error("boom"));
+    expect(seen).toEqual([]); // below threshold, no transition
+    reportTileError(new Error("boom")); // 4th → degraded
+    expect(seen).toEqual([true]);
+  });
+
+  it("ignores AbortErrors (routine pruning never trips it)", () => {
+    const seen: boolean[] = [];
+    subscribeTileHealth((d) => seen.push(d));
+    for (let i = 0; i < 10; i++) {
+      reportTileError(new DOMException("aborted", "AbortError"));
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it("a success resets the streak and clears degraded", () => {
+    const seen: boolean[] = [];
+    subscribeTileHealth((d) => seen.push(d));
+    for (let i = 0; i < 4; i++) reportTileError(new Error("boom"));
+    expect(seen).toEqual([true]);
+    reportTileResult(true); // recovery
+    expect(seen).toEqual([true, false]);
+    // Streak was reset: three more failures stay below threshold.
+    for (let i = 0; i < 3; i++) reportTileError(new Error("boom"));
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("only notifies on transitions, not every event", () => {
+    const seen: boolean[] = [];
+    subscribeTileHealth((d) => seen.push(d));
+    for (let i = 0; i < 6; i++) reportTileError(new Error("boom"));
+    expect(seen).toEqual([true]); // one transition despite 6 failures
   });
 });

@@ -11,6 +11,7 @@ import {
 import type { GetTileDataOptions } from "@developmentseed/deck.gl-zarr";
 import type { Texture } from "@luma.gl/core";
 import * as zarr from "zarrita";
+import { reportTileError, reportTileResult } from "../zarr/tile-error";
 import { decodedChunkCache } from "./chunk-cache";
 import { registerSampleTile } from "./sample-source";
 import { Gamma, LogStretch, SqrtStretch } from "./shader-modules";
@@ -159,11 +160,20 @@ export function makeTextureArrayTileLoader(opts: {
 
     let full = cacheKey ? decodedChunkCache.get(cacheKey) : undefined;
     if (!full) {
-      const chunk = await zarr.get(
-        arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
-        sliceSpec,
-        { signal },
-      );
+      let chunk: Awaited<ReturnType<typeof zarr.get>>;
+      try {
+        chunk = await zarr.get(
+          arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
+          sliceSpec,
+          { signal },
+        );
+      } catch (err) {
+        // Surface persistent (non-abort) tile failures; rethrow so deck.gl
+        // leaves a gap rather than rendering stale data.
+        reportTileError(err);
+        throw err;
+      }
+      reportTileResult(true);
       if (chunk.shape.length !== 3) {
         throw new Error(
           `Texture-array tile expected 3D [frames, H, W]; got [${chunk.shape.join(",")}]`,

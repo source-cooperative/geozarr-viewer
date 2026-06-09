@@ -28,6 +28,7 @@ import { humanizeError, Toast } from "./components/Toast";
 import { ZoomHint } from "./components/ZoomHint";
 import { installKeepMinZoomTiles } from "./render/keep-min-zoom-tiles";
 import type { AutoStats } from "./render/stats";
+import { subscribeTileHealth } from "./zarr/tile-error";
 import { detectProfile, normalizeStoreUrl } from "./source";
 import {
   buildExampleLoadPatch,
@@ -77,6 +78,11 @@ export default function App() {
   const [autoStats, setAutoStats] = useState<AutoStats | null>(null);
   const [codecSummary, setCodecSummary] = useState<CodecSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // True when tiles are repeatedly failing to load (non-abort). Drives a
+  // non-blocking "loading slowly" notice; reset when a tile next succeeds or
+  // the user dismisses it.
+  const [tilesDegraded, setTilesDegraded] = useState(false);
+  const [tileNoticeDismissed, setTileNoticeDismissed] = useState(false);
   const [firstSymbolId, setFirstSymbolId] = useState<string | undefined>();
   // True while a programmatic flyTo animation is in flight. The layer
   // `useMemo` returns null when set, so tiles aren't requested for the
@@ -317,6 +323,16 @@ export default function App() {
     // stats recompute only on those changes, not on every dim-slider tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, profileCtx, statsDepsKey]);
+
+  // Surface repeated (non-abort) tile-load failures as a non-blocking notice.
+  // The counter ignores AbortErrors, so routine pan/zoom pruning never trips
+  // it; a successful tile clears it (and re-arms the dismissable notice).
+  useEffect(() => {
+    return subscribeTileHealth((degraded) => {
+      setTilesDegraded(degraded);
+      if (!degraded) setTileNoticeDismissed(false);
+    });
+  }, []);
 
   // Decode + upload the colormap sprite once the device is ready (only
   // needed for single-band/colormapped profiles).
@@ -617,6 +633,17 @@ export default function App() {
       )}
 
       <Toast message={error} onDismiss={() => setError(null)} />
+
+      {/* Non-fatal notice; the red error toast (above) takes precedence. */}
+      <Toast
+        intent="warn"
+        message={
+          tilesDegraded && !tileNoticeDismissed && !error
+            ? "Tiles are loading slowly or failing — your connection may be slow."
+            : null
+        }
+        onDismiss={() => setTileNoticeDismissed(true)}
+      />
 
       <FullscreenButton />
 

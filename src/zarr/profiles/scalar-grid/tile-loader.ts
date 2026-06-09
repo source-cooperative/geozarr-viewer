@@ -5,6 +5,7 @@ import {
   buildMultiBandTile,
   type MultiBandTileData,
 } from "../../../render/shared-textures";
+import { reportTileError, reportTileResult } from "../../tile-error";
 
 /** ScalarGrid single-band tile loader for regular lat/lon grids.
  *
@@ -41,11 +42,20 @@ export function makeScalarGridTileLoader(opts: {
     options: GetTileDataOptions,
   ): Promise<MultiBandTileData> {
     const { device, sliceSpec, signal, width, height } = options;
-    const chunk = await zarr.get(
-      arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
-      sliceSpec,
-      { signal },
-    );
+    let chunk: Awaited<ReturnType<typeof zarr.get>>;
+    try {
+      chunk = await zarr.get(
+        arr as zarr.Array<zarr.NumberDataType, zarr.Readable>,
+        sliceSpec,
+        { signal },
+      );
+    } catch (err) {
+      // Surface persistent (non-abort) tile failures to the UI; rethrow so
+      // deck.gl leaves a gap for this tile rather than rendering stale data.
+      reportTileError(err);
+      throw err;
+    }
+    reportTileResult(true);
     if (chunk.shape.length !== 2) {
       throw new Error(
         `ScalarGrid tile expected 2D [H,W] after slicing; got [${chunk.shape.join(",")}]`,
