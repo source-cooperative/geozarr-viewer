@@ -28,18 +28,18 @@ export function EmptyState({ onSubmit }: Props) {
         }}
       >
         <div style={{ display: "grid", gap: 4 }}>
-          <span className="panel-header">GeoZarr Viewer</span>
+          <span className="panel-header">Zarr / Icechunk Viewer</span>
           <h2 style={{ margin: 0, fontWeight: 600, fontSize: 20 }}>
-            Open a GeoZarr / Zarr store
+            Open a Zarr / Icechunk store
           </h2>
           <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-            Pick a bundled example below, or paste any GeoZarr / Zarr store
+            Pick a bundled example below, or paste any Zarr / Icechunk store
             URL.
           </span>
         </div>
 
         <label style={{ display: "grid", gap: 6 }}>
-          <span className="field-label">Paste a Zarr URL</span>
+          <span className="field-label">Paste a Zarr / Icechunk URL</span>
           <div style={{ display: "flex", gap: 8 }}>
             <input
               aria-label="zarr-url"
