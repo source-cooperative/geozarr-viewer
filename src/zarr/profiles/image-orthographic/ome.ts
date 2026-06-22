@@ -97,14 +97,14 @@ export type ParsedOme = {
   channels: OmeChannel[];
   channelCount: number;
   levels: OmeLevel[];
-  coarseArray: zarr.Array<zarr.DataType, zarr.Readable>;
-  coarseVariablePath: string;
+  finestVariablePath: string;
+  /** Finest-level spatial size — the world coordinate extent. */
   width: number;
   height: number;
 };
 
 /** Parse an opened OME-Zarr root group into the facts the image profile needs,
- * opening the coarsest pyramid level so its shape is known. */
+ * opening every pyramid level so shapes and downsample factors are known. */
 export async function parseOme(
   root: zarr.Group<zarr.Readable>,
   signal: AbortSignal,
@@ -119,17 +119,6 @@ export async function parseOme(
   const datasets = ms.datasets ?? [];
   if (datasets.length === 0) throw new Error("OME-Zarr multiscale has no levels.");
 
-  const levels: OmeLevel[] = datasets.map((d) => ({
-    path: d.path,
-    scale: scaleOf(d.coordinateTransformations, axes.length),
-  }));
-  // OME datasets are ordered finest-first; the last is the coarsest (smallest).
-  const coarse = levels[levels.length - 1]!;
-  const coarseArray = await zarr.open.v3(group.resolve(coarse.path), {
-    kind: "array",
-  });
-  if (signal.aborted) throw new Error("aborted");
-
   // Spatial pair: the two axes typed "space", in order (y before x).
   const spaceIdx = axes
     .map((a, i) => ({ a, i }))
@@ -143,20 +132,54 @@ export async function parseOme(
   const yIndex = spaceIdx[spaceIdx.length - 2]!;
   const xIndex = spaceIdx[spaceIdx.length - 1]!;
 
+  // Open every level (cheap metadata reads) so we know each one's shape.
+  const arrays = await Promise.all(
+    datasets.map((d) => zarr.open.v3(group.resolve(d.path), { kind: "array" })),
+  );
+  if (signal.aborted) throw new Error("aborted");
+
+  // OME datasets are finest-first. Downsample is each level's spatial scale
+  // relative to the finest level's (falls back to the y-size ratio).
+  const finestScale = scaleOf(datasets[0]!.coordinateTransformations, axes.length);
+  const finestHeight = arrays[0]!.shape[yIndex] ?? 1;
+  const levels: OmeLevel[] = datasets.map((d, i) => {
+    const arr = arrays[i]!;
+    const scale = scaleOf(d.coordinateTransformations, axes.length);
+    const height = arr.shape[yIndex] ?? 1;
+    const byScale = (finestScale[yIndex] ?? 1) > 0
+      ? (scale[yIndex] ?? 1) / (finestScale[yIndex] ?? 1)
+      : 1;
+    const downsample = Number.isFinite(byScale) && byScale > 0
+      ? byScale
+      : finestHeight / Math.max(1, height);
+    return {
+      path: d.path,
+      scale,
+      array: arr,
+      width: arr.shape[xIndex] ?? 0,
+      height,
+      downsample,
+    };
+  });
+
+  const finest = levels[0]!;
   const channelAxisIndex = axes.findIndex((a) => a.type === "channel");
   const channelCount =
-    channelAxisIndex >= 0 ? (coarseArray.shape[channelAxisIndex] ?? 1) : 1;
+    channelAxisIndex >= 0 ? (finest.array.shape[channelAxisIndex] ?? 1) : 1;
 
   const otherAxes = axes
-    .map((a, i) => ({ name: a.name, axisIndex: i, size: coarseArray.shape[i] ?? 1 }))
-    .filter(({ axisIndex }) => axisIndex !== yIndex && axisIndex !== xIndex && axisIndex !== channelAxisIndex);
+    .map((a, i) => ({ name: a.name, axisIndex: i, size: finest.array.shape[i] ?? 1 }))
+    .filter(
+      ({ axisIndex }) =>
+        axisIndex !== yIndex && axisIndex !== xIndex && axisIndex !== channelAxisIndex,
+    );
 
   const channels = parseChannels(omeOf(group)!.omero);
 
   log.info(
     `OME image: series="${seriesPath}" axes=[${axes.map((a) => a.name).join(",")}] ` +
-      `levels=${levels.length} coarse=${coarse.path} ` +
-      `${coarseArray.shape.join("×")} channels=${channelCount}`,
+      `levels=${levels.length} finest=${finest.width}×${finest.height} ` +
+      `downsamples=[${levels.map((l) => l.downsample).join(",")}] channels=${channelCount}`,
   );
 
   return {
@@ -168,9 +191,8 @@ export async function parseOme(
     channels,
     channelCount,
     levels,
-    coarseArray,
-    coarseVariablePath: (seriesPath ? `${seriesPath}/` : "") + coarse.path,
-    width: coarseArray.shape[xIndex] ?? 0,
-    height: coarseArray.shape[yIndex] ?? 0,
+    finestVariablePath: (seriesPath ? `${seriesPath}/` : "") + finest.path,
+    width: finest.width,
+    height: finest.height,
   };
 }

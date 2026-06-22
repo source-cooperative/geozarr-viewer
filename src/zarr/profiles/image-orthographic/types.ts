@@ -9,11 +9,17 @@ export type OmeAxis = {
   unit?: string;
 };
 
-/** A pyramid level: the array path (relative to the multiscale group) and its
- * per-axis scale (from `coordinateTransformations`). Finest level first. */
+/** A pyramid level: the opened array plus its spatial size and downsample
+ * factor relative to the finest level (finest = 1). Finest level first. */
 export type OmeLevel = {
   path: string;
   scale: number[];
+  array: zarr.Array<zarr.DataType, zarr.Readable>;
+  /** Spatial size at this level, in this level's own pixels. */
+  width: number;
+  height: number;
+  /** Linear downsample vs the finest level (1, 2, 4, …). */
+  downsample: number;
 };
 
 /** A channel description from OME-Zarr `omero.channels`. `start`/`end` are the
@@ -46,18 +52,20 @@ export type ImageOrthographicContext = ProfileBaseContext & {
   /** From `omero.channels`; empty when the store has no omero block. */
   channels: OmeChannel[];
   channelCount: number;
-  /** Coarsest pyramid level — opened and rendered whole in the MVP. */
-  coarseArray: zarr.Array<zarr.DataType, zarr.Readable>;
-  /** Spatial size of the coarse level, in pixels. */
+  /** Full pyramid (finest-first), each level opened. */
+  levels: OmeLevel[];
+  /** Spatial size of the FINEST level — the world coordinate extent that all
+   * levels' textures are painted over. */
   width: number;
   height: number;
-  /** Full pyramid (finest-first), kept for the Structure panel / Stage 2. */
-  levels: OmeLevel[];
-  /** Array path of the coarse level, relative to the root group. */
-  coarseVariablePath: string;
+  /** Array path of the finest level, relative to the root group. */
+  finestVariablePath: string;
 };
 
 export type ImageOrthographicState = {
   /** Selected channel index (0-based). */
   channel: number;
+  /** Pinned index for each non-spatial, non-channel axis (z / time), keyed by
+   * axis name. */
+  indices: Record<string, number>;
 };

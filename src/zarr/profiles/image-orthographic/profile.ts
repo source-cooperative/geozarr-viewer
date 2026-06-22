@@ -40,36 +40,50 @@ export const imageOrthographicProfile: ZarrProfile<
       otherAxes: ome.otherAxes,
       channels: ome.channels,
       channelCount: ome.channelCount,
-      coarseArray: ome.coarseArray,
+      levels: ome.levels,
       width: ome.width,
       height: ome.height,
-      levels: ome.levels,
-      coarseVariablePath: ome.coarseVariablePath,
+      finestVariablePath: ome.finestVariablePath,
     };
   },
 
   initialState(ctx) {
     // Default to the first omero-active channel, else channel 0.
     const firstActive = ctx.channels.findIndex((c) => c.active);
-    return { channel: firstActive >= 0 ? firstActive : 0 };
+    // z / time axes start at index 0.
+    const indices: Record<string, number> = {};
+    for (const a of ctx.otherAxes) indices[a.name] = 0;
+    return { channel: firstActive >= 0 ? firstActive : 0, indices };
   },
 
   parseUrlParams(p) {
     const out: Partial<ImageOrthographicState> = {};
     const c = p.get("c");
     if (c !== null && Number.isFinite(Number(c))) out.channel = Number(c);
+    // Non-spatial axis pins serialize as `dim.<name>=<index>`.
+    const indices: Record<string, number> = {};
+    for (const [k, v] of p.entries()) {
+      if (k.startsWith("dim.") && Number.isFinite(Number(v))) {
+        indices[k.slice(4)] = Number(v);
+      }
+    }
+    if (Object.keys(indices).length > 0) out.indices = indices;
     return out;
   },
 
   serializeUrlParams(s) {
-    return { c: String(s.channel) };
+    const out: Record<string, string | null> = { c: String(s.channel) };
+    for (const [name, idx] of Object.entries(s.indices)) {
+      out[`dim.${name}`] = String(idx);
+    }
+    return out;
   },
 
   Controls: ImageOrthographicControls,
 
-  // Expose the opened coarse array as the chassis `node` so the Structure
-  // panel shows its shape/dtype/chunks.
-  resolveNode: async (ctx) => ctx.coarseArray,
+  // Expose the finest-level array as the chassis `node` so the Structure panel
+  // shows its shape/dtype/chunks.
+  resolveNode: async (ctx) => ctx.levels[0]!.array,
 
   // Rendering happens in ImageViewer (OrthographicView), not via a deck.gl
   // layer in the map overlay.
@@ -77,7 +91,7 @@ export const imageOrthographicProfile: ZarrProfile<
 
   getStructure: (ctx) => ({
     zarrVersion: "v3",
-    variables: [{ path: ctx.coarseVariablePath }],
+    variables: [{ path: ctx.finestVariablePath }],
     metadataSource: "store-native",
     metadata: { ome: (ctx.group.attrs as Record<string, unknown>).ome },
   }),

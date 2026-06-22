@@ -8,30 +8,67 @@ export function ImageOrthographicControls({
   update,
   group,
 }: ProfileControlsProps<ImageOrthographicContext, ImageOrthographicState>) {
-  // Channel pick re-reads pixel data → "fetch" bucket. No styling/instant
-  // controls yet (rescale uses the omero window; z/t come in Stage 2).
+  // Channel + z/t pins re-read pixel data → "fetch" bucket. (Rescale uses the
+  // omero window; LOD level is chosen automatically from zoom.)
   if (group !== "fetch") return null;
-  if (ctx.channelCount <= 1) return null;
 
-  const labelText =
+  const scrubAxes = ctx.otherAxes.filter((a) => a.size > 1);
+  if (ctx.channelCount <= 1 && scrubAxes.length === 0) return null;
+
+  const channelLabel =
     ctx.channels[state.channel]?.label ?? `channel ${state.channel}`;
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {ctx.channelCount > 1 && (
+        <AxisSlider
+          label="Channel"
+          value={state.channel}
+          max={ctx.channelCount - 1}
+          valueLabel={channelLabel}
+          onChange={(v) => update({ channel: v })}
+        />
+      )}
+      {scrubAxes.map((axis) => (
+        <AxisSlider
+          key={axis.name}
+          label={axis.name}
+          value={state.indices[axis.name] ?? 0}
+          max={axis.size - 1}
+          onChange={(v) =>
+            update({ indices: { ...state.indices, [axis.name]: v } })
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+function AxisSlider({
+  label,
+  value,
+  max,
+  valueLabel,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  valueLabel?: string;
+  onChange: (next: number) => void;
+}) {
   return (
     <label style={{ display: "grid", gap: 2 }}>
       <span
         className="field-label"
         style={{ display: "flex", justifyContent: "space-between" }}
       >
-        <span>Channel</span>
+        <span>{label}</span>
         <span className="mono" style={{ textTransform: "none" }}>
-          {state.channel} · {labelText}
+          {value}
+          {valueLabel ? ` · ${valueLabel}` : ` / ${max}`}
         </span>
       </span>
-      <StepperRange
-        value={state.channel}
-        min={0}
-        max={Math.max(0, ctx.channelCount - 1)}
-        onChange={(v) => update({ channel: v })}
-      />
+      <StepperRange value={value} min={0} max={Math.max(0, max)} onChange={onChange} />
     </label>
   );
 }
