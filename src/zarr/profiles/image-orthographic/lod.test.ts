@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildSelection, pickLevelForZoom } from "./lod";
+import {
+  buildSelection,
+  buildWindowSelection,
+  computeWindow,
+  pickLevelForZoom,
+} from "./lod";
 import type { OmeAxis } from "./types";
 
 describe("pickLevelForZoom", () => {
@@ -53,5 +58,73 @@ describe("buildSelection", () => {
       t: 5,
     });
     expect(sel).toEqual([5, 2, 0, null, null]); // t=5, c=2, z default 0
+  });
+});
+
+describe("computeWindow", () => {
+  it("covers the whole image at fit-zoom (snaps + clamps to bounds)", () => {
+    const w = computeWindow({
+      targetX: 100,
+      targetY: 50,
+      zoom: 1, // scale 2; half = canvas/2/2
+      canvasW: 400,
+      canvasH: 200,
+      worldW: 200,
+      worldH: 100,
+      downsample: 1,
+      levelW: 200,
+      levelH: 100,
+      chunkW: 64,
+      chunkH: 64,
+    });
+    expect(w).toEqual({ x0: 0, y0: 0, x1: 200, y1: 100 });
+  });
+
+  it("returns a viewport-sized chunk-snapped window when zoomed into a huge level", () => {
+    const w = computeWindow({
+      targetX: 72192,
+      targetY: 46592,
+      zoom: 2, // scale 4 → ~250×200 world px visible
+      canvasW: 1000,
+      canvasH: 800,
+      worldW: 144384,
+      worldH: 93184,
+      downsample: 1,
+      levelW: 144384,
+      levelH: 93184,
+      chunkW: 1024,
+      chunkH: 1024,
+    });
+    // Small window aligned to 1024 chunks — NOT the whole gigapixel level.
+    expect(w).toEqual({ x0: 71680, y0: 46080, x1: 72704, y1: 47104 });
+    expect((w.x1 - w.x0) * (w.y1 - w.y0)).toBe(1024 * 1024);
+  });
+});
+
+describe("buildWindowSelection", () => {
+  const tczyx: OmeAxis[] = [
+    { name: "t", type: "time" },
+    { name: "c", type: "channel" },
+    { name: "z", type: "space" },
+    { name: "y", type: "space" },
+    { name: "x", type: "space" },
+  ];
+
+  it("slices the spatial pair and pins channel + z/t", () => {
+    const sel = buildWindowSelection(
+      tczyx,
+      1,
+      { yIndex: 3, xIndex: 4 },
+      2,
+      { t: 7 },
+      [100, 612], // x range
+      [200, 456], // y range
+    );
+    // t=7, c=2, z default 0 are integer pins; y/x are slices.
+    expect(sel[0]).toBe(7);
+    expect(sel[1]).toBe(2);
+    expect(sel[2]).toBe(0);
+    expect(sel[3]).toMatchObject({ start: 200, stop: 456 }); // y
+    expect(sel[4]).toMatchObject({ start: 100, stop: 612 }); // x
   });
 });

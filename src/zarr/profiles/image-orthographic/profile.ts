@@ -31,10 +31,27 @@ export const imageOrthographicProfile: ZarrProfile<
 
   async prepare(url, signal) {
     // OME-Zarr ships no consolidated metadata; open plain and descend.
-    const opened = await openV3Group(url, { consolidated: false });
+    // `version: "auto"` so OME-Zarr v0.4 (zarr v2) stores open too.
+    const opened = await openV3Group(url, {
+      consolidated: false,
+      version: "auto",
+    });
     const ome = await parseOme(opened.group, signal);
+    // Cheap version probe for the Structure panel: v3 stores have a root
+    // `zarr.json`; v0.4 (v2) stores don't.
+    let zarrVersion: "v2" | "v3" = "v3";
+    try {
+      const head = await fetch(`${url.replace(/\/+$/, "")}/zarr.json`, {
+        method: "HEAD",
+        signal,
+      });
+      zarrVersion = head.ok ? "v3" : "v2";
+    } catch {
+      // Network/abort — leave the v3 default.
+    }
     return {
       url,
+      zarrVersion,
       group: opened.group,
       seriesPath: ome.seriesPath,
       axes: ome.axes,
@@ -142,7 +159,7 @@ export const imageOrthographicProfile: ZarrProfile<
   },
 
   getStructure: (ctx) => ({
-    zarrVersion: "v3",
+    zarrVersion: ctx.zarrVersion,
     variables: [{ path: ctx.finestVariablePath }],
     metadataSource: "store-native",
     metadata: { ome: (ctx.group.attrs as Record<string, unknown>).ome },

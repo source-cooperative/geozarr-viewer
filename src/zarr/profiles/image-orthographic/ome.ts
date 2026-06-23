@@ -21,8 +21,12 @@ type OmeBlock = {
 
 function omeOf(group: zarr.Group<zarr.Readable>): OmeBlock | undefined {
   const attrs = group.attrs as Record<string, unknown>;
+  // OME-Zarr v0.5 nests metadata under an `ome` key; v0.4 puts `multiscales`/
+  // `omero`/`plate` at the root attrs directly. Prefer the wrapper, else fall
+  // back to the root attrs themselves.
   const ome = attrs.ome;
-  return typeof ome === "object" && ome !== null ? (ome as OmeBlock) : undefined;
+  if (typeof ome === "object" && ome !== null) return ome as OmeBlock;
+  return attrs as OmeBlock;
 }
 
 /** Resolve the group that actually holds `multiscales`, descending the common
@@ -41,7 +45,8 @@ async function resolveMultiscaleGroup(
   }
 
   const openImageAt = async (path: string) => {
-    const g = await zarr.open.v3(root.resolve(path), { kind: "group" });
+    // `open` (auto) so v0.4 (zarr v2) plate/well/field sub-groups open too.
+    const g = await zarr.open(root.resolve(path), { kind: "group" });
     if (signal.aborted) throw new Error("aborted");
     return g;
   };
@@ -162,8 +167,9 @@ export async function parseOme(
   const xIndex = spaceIdx[spaceIdx.length - 1]!;
 
   // Open every level (cheap metadata reads) so we know each one's shape.
+  // `open` (auto) handles both v3 and v0.4 (zarr v2) arrays.
   const arrays = await Promise.all(
-    datasets.map((d) => zarr.open.v3(group.resolve(d.path), { kind: "array" })),
+    datasets.map((d) => zarr.open(group.resolve(d.path), { kind: "array" })),
   );
   if (signal.aborted) throw new Error("aborted");
 
@@ -187,6 +193,8 @@ export async function parseOme(
       array: arr,
       width: arr.shape[xIndex] ?? 0,
       height,
+      chunkW: arr.chunks[xIndex] ?? 512,
+      chunkH: arr.chunks[yIndex] ?? 512,
       downsample,
     };
   });

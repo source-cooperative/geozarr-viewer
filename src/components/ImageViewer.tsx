@@ -10,7 +10,12 @@ import {
   buildBandStats,
   percentileFromHistogram,
 } from "../render/stats";
-import { buildSelection, pickLevelForZoom } from "../zarr/profiles/image-orthographic/lod";
+import {
+  buildWindowSelection,
+  computeWindow,
+  type LevelWindow,
+  pickLevelForZoom,
+} from "../zarr/profiles/image-orthographic/lod";
 import type {
   ImageOrthographicContext,
   ImageOrthographicState,
@@ -20,27 +25,37 @@ import { styleToRgba } from "./image-normalize";
 
 const log = createLogger("image-viewer");
 
-/** A decoded level slice: the raw samples (for restyling + hover) plus its
- * intensity stats. Styling is applied separately so colormap/rescale/gamma
- * tweaks never refetch. */
-type RawTexture = {
+/** Cap a single windowed fetch (megapixels). LOD keeps the window ≈ viewport-
+ * sized, so this is just a safety clamp against pathological zooms. */
+const MAX_WINDOW_MP = 8;
+/** How many decoded windows to keep before evicting the oldest. */
+const CACHE_LIMIT = 24;
+/** Debounce (ms) so continuous panning coalesces into one fetch. */
+const REFETCH_DEBOUNCE_MS = 120;
+
+/** A decoded window of one pyramid level: the raw samples (for restyle + hover),
+ * its origin/size in level pixels, and its downsample vs world (finest) space. */
+type RawWindow = {
   raw: ArrayLike<number>;
-  width: number;
-  height: number;
+  /** Window size in level pixels. */
+  winW: number;
+  winH: number;
+  /** Window origin in level pixels. */
+  x0: number;
+  y0: number;
   downsample: number;
   level: number;
   stats: BandStats | null;
 };
 
 type HoverInfo = { x: number; y: number; col: number; row: number; value: number };
+type ViewState = { target: [number, number, number]; zoom: number };
 
-/** Resolve the display window: explicit rescale wins; else a 2–98% percentile
- * of the auto-stats; else the current slice's own min/max; else [0,1]. */
 function resolveRescale(
   rmin: number | undefined,
   rmax: number | undefined,
   autoStats: AutoStats | null,
-  current: RawTexture | null,
+  current: RawWindow | null,
 ): [number, number] {
   if (rmin !== undefined && rmax !== undefined) return [rmin, rmax];
   if (autoStats?.global) {
@@ -54,10 +69,10 @@ function resolveRescale(
 }
 
 /** Standalone deck.gl `OrthographicView` host for non-geographic OME-Zarr
- * images. Picks the pyramid level matching the current zoom (LOD), paints it
- * over a constant pixel-space extent, and applies colormap/rescale/gamma on the
- * CPU. Hover reads the raw intensity under the cursor. Loads each level whole
- * (fits microscopy wells; not gigapixel whole-slides). */
+ * images. Picks the pyramid level matching the current zoom (LOD) and fetches
+ * only the VISIBLE window of that level (chunk-snapped, cached), so gigapixel
+ * whole-slides load with viewport-bounded memory. Styling (colormap/rescale/
+ * gamma) is applied on the CPU and restyles without refetching. */
 export function ImageViewer({
   ctx,
   state,
@@ -72,36 +87,37 @@ export function ImageViewer({
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const deckRef = useRef<Deck<OrthographicView> | null>(null);
-  const sampleRef = useRef<RawTexture | null>(null); // read by hover handler
-  const cacheRef = useRef<Map<string, RawTexture>>(new Map());
+  const sampleRef = useRef<RawWindow | null>(null); // read by hover handler
+  const cacheRef = useRef<Map<string, RawWindow>>(new Map());
 
-  const [zoom, setZoom] = useState<number | null>(null);
-  const [current, setCurrent] = useState<RawTexture | null>(null);
+  const [view, setView] = useState<ViewState | null>(null);
+  const [current, setCurrent] = useState<RawWindow | null>(null);
   const [lut, setLut] = useState<Uint8Array | null>(null);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
 
-  const { width, height } = ctx; // finest-level extent = world coords
+  const { width: worldW, height: worldH } = ctx; // finest-level extent
   const downsamples = useMemo(() => ctx.levels.map((l) => l.downsample), [ctx.levels]);
   const indicesKey = JSON.stringify(state.indices);
 
-  // Create the Deck instance once. View is uncontrolled (deck's controller owns
-  // pan/zoom); we observe zoom for LOD and the cursor for hover.
+  // Create the Deck instance once. The view is uncontrolled (deck's controller
+  // owns pan/zoom); we observe viewState for LOD/windowing and the cursor for
+  // hover.
   useEffect(() => {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
-    if (!canvas || !wrap || width === 0 || height === 0) return;
+    if (!canvas || !wrap || worldW === 0 || worldH === 0) return;
     const cw = wrap.clientWidth || 800;
     const ch = wrap.clientHeight || 600;
-    const fitZoom = Math.log2(Math.min(cw / width, ch / height) * 0.92);
-    setZoom(fitZoom);
+    const fitZoom = Math.log2(Math.min(cw / worldW, ch / worldH) * 0.92);
+    setView({ target: [worldW / 2, worldH / 2, 0], zoom: fitZoom });
 
     const deck = new Deck<OrthographicView>({
       canvas,
       views: new OrthographicView({ id: "ortho" }),
       controller: true,
       initialViewState: {
-        target: [width / 2, height / 2, 0],
+        target: [worldW / 2, worldH / 2, 0],
         zoom: fitZoom,
         minZoom: fitZoom - 1,
         maxZoom: 8,
@@ -109,10 +125,8 @@ export function ImageViewer({
       layers: [],
       getCursor: ({ isDragging }) => (isDragging ? "grabbing" : "crosshair"),
       onViewStateChange: ({ viewState }) => {
-        const z = (viewState as { zoom: number }).zoom;
-        setZoom((prev) =>
-          prev != null && Math.round(prev * 10) === Math.round(z * 10) ? prev : z,
-        );
+        const vs = viewState as { target: [number, number, number]; zoom: number };
+        setView({ target: vs.target, zoom: vs.zoom });
       },
       onHover: (info) => {
         const tex = sampleRef.current;
@@ -123,78 +137,131 @@ export function ImageViewer({
         }
         const col = Math.floor(coord[0]!);
         const row = Math.floor(coord[1]!);
-        if (col < 0 || col >= width || row < 0 || row >= height) {
+        if (col < 0 || col >= worldW || row < 0 || row >= worldH) {
           setHover(null);
           return;
         }
-        const lc = Math.min(tex.width - 1, Math.floor(col / tex.downsample));
-        const lr = Math.min(tex.height - 1, Math.floor(row / tex.downsample));
-        setHover({ x: info.x, y: info.y, col, row, value: Number(tex.raw[lr * tex.width + lc]) });
+        // world px → this window's level-pixel grid (offset by window origin).
+        const lc = Math.floor(col / tex.downsample) - tex.x0;
+        const lr = Math.floor(row / tex.downsample) - tex.y0;
+        if (lc < 0 || lc >= tex.winW || lr < 0 || lr >= tex.winH) {
+          setHover(null);
+          return;
+        }
+        setHover({ x: info.x, y: info.y, col, row, value: Number(tex.raw[lr * tex.winW + lc]) });
       },
     });
     deckRef.current = deck;
-    log.info(`ortho host ${width}×${height}px, fitZoom=${fitZoom.toFixed(2)}`);
+    log.info(`ortho host ${worldW}×${worldH}px, fitZoom=${fitZoom.toFixed(2)}`);
     return () => {
       deck.finalize();
       deckRef.current = null;
     };
-  }, [width, height]);
+  }, [worldW, worldH]);
 
   const targetLevel =
-    zoom == null ? ctx.levels.length - 1 : pickLevelForZoom(zoom, downsamples);
+    view == null ? ctx.levels.length - 1 : pickLevelForZoom(view.zoom, downsamples);
 
-  // Load the selected level + channel + z/t slice (raw + stats), and cache it.
-  // The previous slice stays painted until the new one is ready.
-  useEffect(() => {
+  // Visible window of the chosen level (chunk-snapped). Recomputed on view
+  // change; returns a stable rect while panning within the same chunks.
+  const viewWindow: LevelWindow | null = useMemo(() => {
+    if (!view) return null;
     const level = ctx.levels[targetLevel];
-    if (!level) return;
-    const key = `${targetLevel}|${state.channel}|${indicesKey}`;
-    const cached = cacheRef.current.get(key);
+    const wrap = wrapRef.current;
+    if (!level || !wrap) return null;
+    return computeWindow({
+      targetX: view.target[0],
+      targetY: view.target[1],
+      zoom: view.zoom,
+      canvasW: wrap.clientWidth || 800,
+      canvasH: wrap.clientHeight || 600,
+      worldW,
+      worldH,
+      downsample: level.downsample,
+      levelW: level.width,
+      levelH: level.height,
+      chunkW: level.chunkW,
+      chunkH: level.chunkH,
+    });
+  }, [view, targetLevel, ctx.levels, worldW, worldH]);
+
+  const windowKey = viewWindow
+    ? `${targetLevel}|${state.channel}|${indicesKey}|${viewWindow.x0}_${viewWindow.y0}_${viewWindow.x1}_${viewWindow.y1}`
+    : null;
+
+  // Fetch the visible window (raw + stats), cache it, and paint it. Debounced so
+  // a pan gesture coalesces; the previous window stays painted until ready.
+  useEffect(() => {
+    if (!viewWindow || !windowKey) return;
+    const cached = cacheRef.current.get(windowKey);
     if (cached) {
       sampleRef.current = cached;
       setCurrent(cached);
       setStatus("ready");
       return;
     }
+    const level = ctx.levels[targetLevel]!;
     const ctrl = new AbortController();
-    (async () => {
-      try {
-        const sel = buildSelection(
-          ctx.axes,
-          ctx.channelAxisIndex,
-          ctx.spatialAxes,
-          state.channel,
-          state.indices,
-        );
-        const chunk = await zarr.get(
-          level.array as zarr.Array<zarr.NumberDataType, zarr.Readable>,
-          sel,
-          { signal: ctrl.signal },
-        );
-        if (ctrl.signal.aborted) return;
-        const raw = chunk.data as ArrayLike<number>;
-        const tex: RawTexture = {
-          raw,
-          width: level.width,
-          height: level.height,
-          downsample: level.downsample,
-          level: targetLevel,
-          stats: buildBandStats(raw, null),
-        };
-        cacheRef.current.set(key, tex);
-        sampleRef.current = tex;
-        setCurrent(tex);
-        setStatus("ready");
-      } catch (err) {
-        if (ctrl.signal.aborted) return;
-        log.error("level load failed", err);
-        setStatus("error");
-      }
-    })();
-    return () => ctrl.abort();
-    // state.indices read inside; its value is captured by indicesKey.
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          let { x0, y0, x1, y1 } = viewWindow;
+          // Safety clamp: shrink an oversized window around its center.
+          if (((x1 - x0) * (y1 - y0)) / 1e6 > MAX_WINDOW_MP) {
+            const cap = Math.floor(Math.sqrt(MAX_WINDOW_MP * 1e6));
+            const cx = Math.floor((x0 + x1) / 2);
+            const cy = Math.floor((y0 + y1) / 2);
+            x0 = Math.max(0, cx - cap / 2);
+            y0 = Math.max(0, cy - cap / 2);
+            x1 = Math.min(level.width, x0 + cap);
+            y1 = Math.min(level.height, y0 + cap);
+          }
+          const sel = buildWindowSelection(
+            ctx.axes,
+            ctx.channelAxisIndex,
+            ctx.spatialAxes,
+            state.channel,
+            state.indices,
+            [x0, x1],
+            [y0, y1],
+          );
+          const chunk = await zarr.get(
+            level.array as zarr.Array<zarr.NumberDataType, zarr.Readable>,
+            sel,
+            { signal: ctrl.signal },
+          );
+          if (ctrl.signal.aborted) return;
+          const raw = chunk.data as ArrayLike<number>;
+          const tex: RawWindow = {
+            raw,
+            winW: x1 - x0,
+            winH: y1 - y0,
+            x0,
+            y0,
+            downsample: level.downsample,
+            level: targetLevel,
+            stats: buildBandStats(raw, null),
+          };
+          const cache = cacheRef.current;
+          cache.set(windowKey, tex);
+          if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+          sampleRef.current = tex;
+          setCurrent(tex);
+          setStatus("ready");
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          log.error("window load failed", err);
+          setStatus("error");
+        }
+      })();
+    }, REFETCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+    // state.indices read inside; captured by indicesKey via windowKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx, targetLevel, state.channel, indicesKey]);
+  }, [windowKey, ctx, targetLevel]);
 
   // Drop the cache when the store changes.
   useEffect(() => {
@@ -205,7 +272,7 @@ export function ImageViewer({
     };
   }, [ctx]);
 
-  // Load the colormap LUT (null = grayscale fallback / "gray" handled by LUT).
+  // Load the colormap LUT (null = grayscale).
   useEffect(() => {
     let cancelled = false;
     loadColormapLut(state.colormap)
@@ -220,33 +287,37 @@ export function ImageViewer({
     };
   }, [state.colormap]);
 
-  // Build the styled ImageData from the raw slice — recomputed on styling
-  // changes (no refetch). Primitive deps so it doesn't rerun every render.
+  // Restyle the current window (no refetch). Primitive deps so it doesn't rerun
+  // every render.
   const rmin = state.rescale?.[0];
   const rmax = state.rescale?.[1];
   const image = useMemo(() => {
     if (!current) return null;
     const [mn, mx] = resolveRescale(rmin, rmax, autoStats, current);
-    const rgba = styleToRgba(current.raw, current.width, current.height, mn, mx, state.gamma, lut);
-    return new ImageData(rgba, current.width, current.height);
+    const rgba = styleToRgba(current.raw, current.winW, current.winH, mn, mx, state.gamma, lut);
+    return new ImageData(rgba, current.winW, current.winH);
   }, [current, rmin, rmax, state.gamma, lut, autoStats]);
 
-  // Push the styled texture to Deck as a single BitmapLayer over the constant
-  // finest-pixel extent.
+  // Push the styled window to Deck as a BitmapLayer over its world extent.
   useEffect(() => {
     if (!image || !current) return;
+    const ds = current.downsample;
+    const left = current.x0 * ds;
+    const top = current.y0 * ds;
+    const right = (current.x0 + current.winW) * ds;
+    const bottom = (current.y0 + current.winH) * ds;
     deckRef.current?.setProps({
       layers: [
         new BitmapLayer({
-          id: `ome-L${current.level}`,
+          id: `ome-L${current.level}-${current.x0}_${current.y0}`,
           image,
-          // bounds [left, bottom, right, top]; top=0 → row 0 at top under flipY.
-          bounds: [0, height, width, 0],
+          // [left, bottom, right, top]; top<bottom puts row 0 at top under flipY.
+          bounds: [left, bottom, right, top],
           opacity,
         }),
       ],
     });
-  }, [image, current, opacity, width, height]);
+  }, [image, current, opacity]);
 
   return (
     <div ref={wrapRef} style={{ position: "absolute", inset: 0, background: "#000" }}>

@@ -18,6 +18,9 @@ export type OmeLevel = {
   /** Spatial size at this level, in this level's own pixels. */
   width: number;
   height: number;
+  /** Spatial chunk size at this level (x, y). Windowed reads snap to these. */
+  chunkW: number;
+  chunkH: number;
   /** Linear downsample vs the finest level (1, 2, 4, …). */
   downsample: number;
 };
@@ -35,6 +38,9 @@ export type OmeChannel = {
 
 export type ImageOrthographicContext = ProfileBaseContext & {
   url: string;
+  /** Detected zarr format ("v2" for OME-Zarr v0.4, "v3" for v0.5+). Display
+   * only — shown in the Structure panel. */
+  zarrVersion: "v2" | "v3";
   /** Root group (for the Structure panel). For a bioformats2raw layout this
    * is the wrapper above the multiscale series group. */
   group: zarr.Group<zarr.Readable>;

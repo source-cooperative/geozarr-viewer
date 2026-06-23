@@ -172,4 +172,11 @@ export const EXAMPLES: Example[] = [
     url: "https://livingobjects.ebi.ac.uk/idr/zarr/v0.5/idr0026/3.66.9-6.141020_15-41-29.00.ome.zarr",
     params: { p: "image-orthographic" },
   },
+  {
+    // Gigapixel whole-slide: OME-Zarr v0.4 (zarr v2), finest 144384×93184 over
+    // 11 pyramid levels. Exercises v2 parsing + viewport-windowed loading.
+    title: "IDR — idr0083A whole-slide (v0.4, 144k×93k, OME-Zarr)",
+    url: "https://livingobjects.ebi.ac.uk/idr/zarr/v0.4/idr0083A/9822152.zarr",
+    params: { p: "image-orthographic" },
+  },
 ];
