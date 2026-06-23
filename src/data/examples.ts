@@ -158,4 +158,11 @@ export const EXAMPLES: Example[] = [
     // profile's OrthographicView rather than on the map.
     params: { p: "image-orthographic" },
   },
+  {
+    // OME-Zarr HCS plate (t,c,z,y,x); the image profile descends to the first
+    // well/field (A/1) and renders it.
+    title: "IDR — idr0010 / 76-45 plate, well A/1 (OME-Zarr HCS)",
+    url: "https://livingobjects.ebi.ac.uk/idr/zarr/v0.5/idr0010/76-45.ome.zarr",
+    params: { p: "image-orthographic" },
+  },
 ];

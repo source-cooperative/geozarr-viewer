@@ -13,6 +13,10 @@ type OmeBlock = {
   }[];
   omero?: { channels?: unknown[] };
   "bioformats2raw.layout"?: number;
+  /** HCS plate: wells reference well groups, each holding field images. */
+  plate?: { wells?: { path?: string }[] };
+  /** A well group: images are the fields acquired in that well. */
+  well?: { images?: { path?: string }[] };
 };
 
 function omeOf(group: zarr.Group<zarr.Readable>): OmeBlock | undefined {
@@ -21,10 +25,13 @@ function omeOf(group: zarr.Group<zarr.Readable>): OmeBlock | undefined {
   return typeof ome === "object" && ome !== null ? (ome as OmeBlock) : undefined;
 }
 
-/** Resolve the group that actually holds `multiscales`. For a bioformats2raw
- * layout the root is a wrapper whose images live under numbered series groups
- * (`0`, `1`, …); we descend into the first series. Returns the multiscale
- * group plus its path from the root (`""` when multiscales are at the root). */
+/** Resolve the group that actually holds `multiscales`, descending the common
+ * OME-Zarr container layouts. Returns the multiscale group plus its path from
+ * the root (`""` when multiscales are at the root). The MVP renders a single
+ * image, so containers (plates/series) resolve to their first image:
+ *   - multiscales at the root → use it.
+ *   - HCS plate → first well → first field image.
+ *   - bioformats2raw.layout 3 → series `0`. */
 async function resolveMultiscaleGroup(
   root: zarr.Group<zarr.Readable>,
   signal: AbortSignal,
@@ -32,18 +39,40 @@ async function resolveMultiscaleGroup(
   if (omeOf(root)?.multiscales?.length) {
     return { group: root, seriesPath: "" };
   }
-  const layout = omeOf(root)?.["bioformats2raw.layout"];
-  if (layout === 3) {
-    // First image series. (Multi-series plates/wells would enumerate here;
-    // the MVP renders series 0.)
-    const series = await zarr.open.v3(root.resolve("0"), { kind: "group" });
+
+  const openImageAt = async (path: string) => {
+    const g = await zarr.open.v3(root.resolve(path), { kind: "group" });
     if (signal.aborted) throw new Error("aborted");
+    return g;
+  };
+
+  // HCS plate: plate → well → field. Pick the first well, then its first field.
+  const plate = omeOf(root)?.plate;
+  if (plate?.wells?.length) {
+    const wellPath = plate.wells[0]?.path;
+    if (wellPath) {
+      const well = await openImageAt(wellPath);
+      const fieldPath = omeOf(well)?.well?.images?.[0]?.path;
+      if (fieldPath) {
+        const seriesPath = `${wellPath}/${fieldPath}`;
+        const field = await openImageAt(seriesPath);
+        if (omeOf(field)?.multiscales?.length) {
+          return { group: field, seriesPath };
+        }
+      }
+    }
+  }
+
+  // bioformats2raw: first image series. (Multi-series would enumerate here.)
+  if (omeOf(root)?.["bioformats2raw.layout"] === 3) {
+    const series = await openImageAt("0");
     if (omeOf(series)?.multiscales?.length) {
       return { group: series, seriesPath: "0" };
     }
   }
+
   throw new Error(
-    "Not an OME-Zarr image: no `ome.multiscales` at the root or under series 0.",
+    "Not an OME-Zarr image: no `ome.multiscales` at the root, first plate well, or series 0.",
   );
 }
 
