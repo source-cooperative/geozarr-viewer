@@ -165,4 +165,11 @@ export const EXAMPLES: Example[] = [
     url: "https://livingobjects.ebi.ac.uk/idr/zarr/v0.5/idr0010/76-45.ome.zarr",
     params: { p: "image-orthographic" },
   },
+  {
+    // 5D time-lapse (t=47, z=21, 3 channels) — exercises both the t and z
+    // scrub sliders alongside the channel picker.
+    title: "IDR — idr0026 4D time-lapse (47×t, 21×z, 3-channel, OME-Zarr)",
+    url: "https://livingobjects.ebi.ac.uk/idr/zarr/v0.5/idr0026/3.66.9-6.141020_15-41-29.00.ome.zarr",
+    params: { p: "image-orthographic" },
+  },
 ];
