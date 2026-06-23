@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 
-const COMMIT_DELAY_MS = 200;
 
 /** Compact display for a numeric value: 4 significant figures, switching to
  * exponential for very small/large magnitudes. */
@@ -62,17 +61,16 @@ type Props = {
   max: number;
   /** Committed `[low, high]` (from state). */
   value: [number, number];
-  /** Called with the debounced `[low, high]` after the user pauses. */
+  /** Called with `[low, high]` on every change. */
   onCommit: (next: [number, number]) => void;
 };
 
 /**
  * A dual-handle range slider with editable min/max number boxes. Drags and
- * typed edits update a local draft (so handles + boxes move continuously) but
- * only commit to `onCommit` after a short idle delay — same debounce contract
- * as {@link DebouncedSlider}. The handles can't cross (each is clamped to the
- * other), and the lower handle is raised above the upper one in its top half so
- * it stays grabbable when both sit near `max`.
+ * typed edits update a local draft (so handles + boxes move continuously) and
+ * commit to `onCommit` immediately on every change. The handles can't cross
+ * (each is clamped to the other), and the lower handle is raised above the
+ * upper one in its top half so it stays grabbable when both sit near `max`.
  *
  * The track auto-widens: an edit (or value) outside the passed `[min, max]`
  * pushes that endpoint out so the handle stays on-track.
@@ -87,11 +85,10 @@ export function RangeSlider({ min, max, value, onCommit }: Props) {
     setDraft([vlo, vhi]);
   }, [vlo, vhi]);
 
-  // Debounced commit: one commit COMMIT_DELAY_MS after the last draft change.
+  // Commit immediately on every draft change (real-time map updates).
   useEffect(() => {
     if (draft[0] === vlo && draft[1] === vhi) return;
-    const t = setTimeout(() => onCommit(draft), COMMIT_DELAY_MS);
-    return () => clearTimeout(t);
+    onCommit(draft);
   }, [draft, vlo, vhi, onCommit]);
 
   const [lo, hi] = draft;
