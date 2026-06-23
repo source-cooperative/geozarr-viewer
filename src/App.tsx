@@ -515,6 +515,9 @@ export default function App() {
 
   const profileLabel = profile?.label ?? null;
   const showSingleBandControls = profile?.needsColormap ?? false;
+  // Non-geographic image profiles (OrthographicView host) hide map-only
+  // chassis controls (basemap, location presets, GeoZarr metadata).
+  const geographic = profile?.host !== "image";
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -588,6 +591,7 @@ export default function App() {
           update={update}
           profileLabel={profileLabel}
           showSingleBandControls={showSingleBandControls}
+          geographic={geographic}
           autoStats={autoStats}
           onFlyTo={handleFlyTo}
           profileFetchSlot={profile.Controls({
@@ -639,6 +643,7 @@ export default function App() {
                 node={node}
                 structure={structureSummary}
                 codecs={codecSummary}
+                geographic={geographic}
               />
             ) : null
           }
