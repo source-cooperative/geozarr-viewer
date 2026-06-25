@@ -123,4 +123,14 @@ describe("deriveMinZoom (fetch-budget gate)", () => {
     const bundled = deriveMinZoom(10, 256, 256, 4, undefined, undefined, 16);
     expect(bundled).toBeGreaterThan(unbundled);
   });
+
+  it("Meta CHM multiscale coarsest level (64x) gates to a memory-safe floor", () => {
+    // The multiscale-grid profile applies the gate to the COARSEST level (it has
+    // no coarser overview, so zooming out clamps to it). 64x: ~76.437 m/px,
+    // 512² chunks, uint8, 524288² shape (multi-chunk → per-zoom loop, no
+    // single-plane short-circuit). z8 needs ⌈d/512⌉²=25 chunks/viewport (>16
+    // budget); z9 needs 9 → floor lands at z9, bounding the zoomed-out fetch.
+    const z = deriveMinZoom(76.437, 512, 512, bytesPerElement("uint8"), 524288, 524288);
+    expect(z).toBe(9);
+  });
 });

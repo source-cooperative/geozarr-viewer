@@ -24,6 +24,9 @@ export type MultiscaleGridContext = ProfileBaseContext & {
   coarsestGeoTransform: readonly number[];
   /** Path of the finest array (primary for the Structure panel). */
   primaryPath: string;
+  /** Lowest map zoom to load coarsest-level tiles; below it loaded tiles freeze
+   * (memory gate) and <ZoomHint> shows. 0 = no gate (e.g. geographic CRS). */
+  minRenderZoom: number;
 };
 
 /** No per-store selectors for v1 (single 2-D `chm` variable). */
