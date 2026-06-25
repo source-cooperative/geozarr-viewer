@@ -4,9 +4,12 @@ import { createLogger } from "../../../log";
 import { buildSingleBandRenderTile } from "../../../render/single-band-pipeline";
 import type { MultiBandTileData } from "../../../render/shared-textures";
 import { autoStatsFromGlobal, buildBandStats } from "../../../render/stats";
+import { KEEP_MIN_ZOOM_EXTENT } from "../../../render/keep-min-zoom-tiles";
+import { bytesPerElement } from "../../chunk-size";
 import { buildGeoZarrMetadata, parseMultiscaleDatasets } from "../../multiscale";
 import { openV3Group } from "../../load-zarr";
 import type { ZarrProfile } from "../../profile";
+import { deriveMinZoom } from "../scalar-grid/profile";
 import { makeScalarGridTileLoader } from "../scalar-grid/tile-loader";
 import { MultiscaleGridControls } from "./controls";
 import type { MultiscaleGridContext, MultiscaleGridState } from "./types";
@@ -131,9 +134,32 @@ export const multiscaleGridProfile: ZarrProfile<
       );
     }
     const metadata = buildGeoZarrMetadata({ levels, crsWkt, dims });
+    // Memory gate: the coarsest level has no coarser overview, so deck.gl clamps
+    // to it when zoomed out and enumerates every viewport tile at its native
+    // resolution (CHM: ~76 m/px, 512² chunks) — thousands continent-wide (~7 GB).
+    // Gate LOADING (not rendering) below the zoom where a coarsest-level viewport
+    // fill stays within the fetch budget; below it, already-loaded tiles freeze
+    // (installKeepMinZoomTiles) and <ZoomHint> shows. The GeoTransform pixel size
+    // is in the store's CRS units and deriveMinZoom expects metres — EPSG:3857
+    // (this store) is metric, so use it directly; for a geographic CRS skip the
+    // gate rather than mis-gate with a degrees value.
+    const coarse = coarsestArray!;
+    const cn = coarse.chunks.length;
+    const isGeographic = crsCode != null && /4326|4269|4258/.test(crsCode);
+    const minRenderZoom = isGeographic
+      ? 0
+      : deriveMinZoom(
+          Math.abs(coarsestGeoTransform[1] ?? 0),
+          coarse.chunks[cn - 1] ?? 512,
+          coarse.chunks[cn - 2] ?? 512,
+          bytesPerElement(coarse.dtype),
+          coarse.shape[cn - 1],
+          coarse.shape[cn - 2],
+        );
     log.info(
       `prepared multiscale "${variable}" ${dtype} ${datasets.length} levels, ` +
-        `${finestPixelMeters.toFixed(2)} m/px native, crs=${crsCode ?? "wkt"}`,
+        `${finestPixelMeters.toFixed(2)} m/px native, crs=${crsCode ?? "wkt"}, ` +
+        `minRenderZoom=${minRenderZoom}`,
     );
     done();
     return {
@@ -151,6 +177,7 @@ export const multiscaleGridProfile: ZarrProfile<
       coarsestArray: coarsestArray!,
       coarsestGeoTransform,
       primaryPath,
+      minRenderZoom,
     };
   },
 
@@ -187,6 +214,11 @@ export const multiscaleGridProfile: ZarrProfile<
       getTileData: makeScalarGridTileLoader({ fillValue: null }),
       renderTile,
       opacity: chassisState.opacity,
+      // Stop fetching new tiles when zoomed out past the coarsest level's
+      // budget floor; the non-null extent keeps already-loaded tiles painted
+      // (vs. blanking) — see installKeepMinZoomTiles / scalar-grid.
+      minZoom: ctx.minRenderZoom,
+      extent: KEEP_MIN_ZOOM_EXTENT,
       maxRequests: 20,
       maxCacheSize: 64,
       // beforeId is injected by @deck.gl/mapbox; attach via a wider cast.
