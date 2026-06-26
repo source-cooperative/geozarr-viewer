@@ -12,7 +12,7 @@ import type {
   ViewerState,
   ViewerStateUpdate,
 } from "../state/types";
-import { InfoIcon } from "./Tooltip";
+import { InfoIcon, WarningIcon } from "./Tooltip";
 import { dimTint } from "../zarr/dim-colors";
 
 /** Top-level keys we render with their canonical labels under GeoZarr.
@@ -241,11 +241,30 @@ function StoreSection({
         {conventions.length > 0 && (
           <KV
             label="Conventions"
-            info="Zarr conventions declared in the store's root group attributes. CF (Climate and Forecast) conventions are signaled via a 'Conventions' attribute; OME-Zarr by a 'multiscales' attribute carrying an 'axes' field (a 'multiscales' attribute without 'axes' is the CF/GeoZarr multiscale-pyramid convention, not OME-Zarr); GeoZarr by 'spatial:*' or 'proj:code' attributes."
+            info="Zarr conventions used by the store's root group. The canonical source is the 'zarr_conventions' registry attribute; CF is read from the 'Conventions' attribute, OME-Zarr from a 'multiscales' attribute with an 'axes' field, and GeoZarr from 'spatial:*' / 'proj:code' keys. A warning icon marks a convention inferred from a legacy signal rather than the registry."
           >
-            {conventions
-              .map((c) => (c.version ? `${c.name}-${c.version}` : c.name))
-              .join(", ")}
+            <span
+              style={{
+                display: "inline-flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                columnGap: 6,
+                rowGap: 2,
+              }}
+            >
+              {conventions.map((c, i) => (
+                <span
+                  key={c.name}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
+                >
+                  <span>
+                    {c.version ? `${c.name}-${c.version}` : c.name}
+                    {i < conventions.length - 1 ? "," : ""}
+                  </span>
+                  {c.legacy && <WarningIcon text={c.legacy} />}
+                </span>
+              ))}
+            </span>
           </KV>
         )}
       </dl>
