@@ -14,50 +14,100 @@
 export type ConventionEntry = {
   name: string;
   version: string | null;
+  /** Set when the convention was inferred from a legacy/pre-standard signal
+   * rather than the canonical `zarr_conventions` registry. The text explains
+   * the current best practice and is surfaced as a warning tooltip. */
+  legacy?: string;
 };
+
+const LEGACY_MULTISCALES_NOTE =
+  "Detected from a legacy array-shaped `multiscales` attribute (the " +
+  "xarray-multiscale / ndpyramid layout). Current best practice is to declare " +
+  "multiscale pyramids via the `zarr_conventions` registry — see " +
+  "github.com/zarr-conventions/multiscales.";
 
 /**
  * Detect Zarr conventions used by the root group from its attributes.
  *
- * Checks three sources:
- *   - The standard `Conventions` string attr (CF, ACDD, UGRID, …).
- *   - An OME-Zarr `multiscales` array attr (identified by its `axes` field).
- *   - `spatial:*` / `proj:*` keys (GeoZarr).
+ * Checks, in order:
+ *   - The CF-style `Conventions` string attr (CF, ACDD, UGRID, …).
+ *   - The canonical `zarr_conventions` registry (array of {name, schema_url, …}).
+ *   - A `multiscales` array attr — OME-Zarr when it carries `axes`, otherwise
+ *     the legacy datasets-based pyramid layout (flagged legacy).
+ *   - `spatial:*` / `proj:code` keys (developmentseed GeoZarr).
+ *
+ * Names are deduped (first wins), so a registry-declared `multiscales` takes
+ * precedence over the legacy heuristic.
  */
 export function detectConventions(
   attrs: Record<string, unknown>,
 ): ConventionEntry[] {
   const result: ConventionEntry[] = [];
+  const seen = new Set<string>();
+  const add = (entry: ConventionEntry) => {
+    if (seen.has(entry.name)) return;
+    seen.add(entry.name);
+    result.push(entry);
+  };
 
   const conv = attrs["Conventions"];
   if (typeof conv === "string" && conv.trim()) {
     for (const token of conv.split(/[\s,]+/).filter(Boolean)) {
       const m = /^([A-Za-z][A-Za-z0-9_-]*)-(\d[\d.]*)$/.exec(token);
-      result.push(m ? { name: m[1]!, version: m[2]! } : { name: token, version: null });
+      add(m ? { name: m[1]!, version: m[2]! } : { name: token, version: null });
     }
   }
 
-  // The `multiscales` key is NOT unique to OME-Zarr: the CF/rioxarray
-  // multiscale-pyramid convention (e.g. Meta CHM, xarray-multiscale) reuses it
-  // for geospatial pyramids. OME-NGFF multiscale entries always carry an `axes`
-  // array (spec-required since v0.3); the CF convention has none. Gate on `axes`
-  // so a geospatial pyramid isn't mislabeled as OME-Zarr bioimaging.
+  // Canonical registry: stores declare their conventions explicitly here, each
+  // with a `schema_url` whose `/tags/vX.Y/` segment carries the version.
+  const registry = attrs["zarr_conventions"];
+  if (Array.isArray(registry)) {
+    for (const entry of registry) {
+      if (!isObject(entry)) continue;
+      const name = entry["name"];
+      if (typeof name !== "string" || !name) continue;
+      add({ name, version: registryVersion(entry) });
+    }
+  }
+
+  // The `multiscales` key is NOT unique to OME-Zarr: the legacy datasets-based
+  // pyramid layout (e.g. Meta CHM, xarray-multiscale) reuses it. OME-NGFF
+  // multiscale entries always carry an `axes` array (spec-required since v0.3);
+  // the legacy layout has none. Gate OME on `axes`; treat an `axes`-less
+  // datasets array as the legacy `multiscales` convention (unless the registry
+  // already declared it).
   const multiscales = attrs["multiscales"];
   if (Array.isArray(multiscales) && multiscales.length > 0) {
     const first = multiscales[0];
     if (isObject(first) && Array.isArray(first["axes"])) {
-      const version =
-        typeof first["version"] === "string" ? first["version"] : null;
-      result.push({ name: "OME-Zarr", version });
+      add({
+        name: "OME-Zarr",
+        version: typeof first["version"] === "string" ? first["version"] : null,
+      });
+    } else if (isObject(first) && Array.isArray(first["datasets"])) {
+      add({ name: "multiscales", version: null, legacy: LEGACY_MULTISCALES_NOTE });
     }
   }
 
   const hasGeoZarr = Object.keys(attrs).some(
     (k) => k.startsWith("spatial:") || k === "proj:code",
   );
-  if (hasGeoZarr) result.push({ name: "GeoZarr", version: null });
+  if (hasGeoZarr) add({ name: "GeoZarr", version: null });
 
   return result;
+}
+
+/** Version for a `zarr_conventions` registry entry: an explicit `version`
+ * string if present, else the `vX.Y` tag embedded in its `schema_url`
+ * (e.g. `…/refs/tags/v0.1/schema.json` → `"0.1"`). Null when neither is found. */
+function registryVersion(entry: Record<string, unknown>): string | null {
+  if (typeof entry["version"] === "string") return entry["version"];
+  const url = entry["schema_url"];
+  if (typeof url === "string") {
+    const m = /\/tags\/v?(\d[\d.]*?)\/schema\.json/.exec(url);
+    if (m) return m[1]!;
+  }
+  return null;
 }
 
 /** Where the GeoZarr-style attrs handed to `ZarrLayer.metadata` came from. */

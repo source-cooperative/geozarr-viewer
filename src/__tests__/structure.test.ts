@@ -71,11 +71,12 @@ describe("detectConventions", () => {
     ]);
   });
 
-  it("does not flag a CF/rioxarray multiscale pyramid (no `axes`) as OME-Zarr", () => {
-    // Meta CHM v2 shape: the `multiscales` key is reused by the CF
-    // multiscale-pyramid convention (datasets[].downscale_factor + a top-level
-    // `type`), which has no OME-Zarr `axes`. OME-Zarr must NOT be reported —
-    // only the declared CF convention.
+  it("labels a CF/rioxarray multiscale pyramid as legacy `multiscales`, not OME-Zarr", () => {
+    // Meta CHM v2 shape: the `multiscales` key is reused by the legacy
+    // multiscale-pyramid layout (datasets[].downscale_factor + a top-level
+    // `type`), which has no OME-Zarr `axes` and predates the `zarr_conventions`
+    // registry. It must be reported as `multiscales` (flagged legacy), NOT
+    // OME-Zarr.
     const attrs = {
       Conventions: "CF-1.10",
       multiscales: [
@@ -89,7 +90,49 @@ describe("detectConventions", () => {
         },
       ],
     };
-    expect(detectConventions(attrs)).toEqual([{ name: "CF", version: "1.10" }]);
+    expect(detectConventions(attrs)).toEqual([
+      { name: "CF", version: "1.10" },
+      { name: "multiscales", version: null, legacy: expect.any(String) },
+    ]);
+  });
+
+  it("detects conventions from the zarr_conventions registry, version from schema_url tag", () => {
+    const attrs = {
+      zarr_conventions: [
+        {
+          name: "multiscales",
+          uuid: "d35379db-88df-4056-af3a-620245f8e347",
+          schema_url:
+            "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v0.1/schema.json",
+        },
+        {
+          name: "proj",
+          schema_url:
+            "https://raw.githubusercontent.com/zarr-conventions/proj/refs/tags/v0.2/schema.json",
+        },
+      ],
+    };
+    // Registry entries are canonical — no `legacy` flag.
+    expect(detectConventions(attrs)).toEqual([
+      { name: "multiscales", version: "0.1" },
+      { name: "proj", version: "0.2" },
+    ]);
+  });
+
+  it("prefers the registry `multiscales` over a legacy array (deduped, not flagged legacy)", () => {
+    const attrs = {
+      zarr_conventions: [
+        {
+          name: "multiscales",
+          schema_url:
+            "https://raw.githubusercontent.com/zarr-conventions/multiscales/refs/tags/v0.1/schema.json",
+        },
+      ],
+      multiscales: [{ datasets: [{ path: "1x", downscale_factor: 1 }] }],
+    };
+    expect(detectConventions(attrs)).toEqual([
+      { name: "multiscales", version: "0.1" },
+    ]);
   });
 });
 
